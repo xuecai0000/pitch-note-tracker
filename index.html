@@ -91,9 +91,9 @@
 
         <section class="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
           <div class="rounded-2xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur">
-            <div class="text-sm font-medium text-slate-300">检测到的音</div>
+            <div class="text-sm font-medium text-slate-300">曲线当前音高</div>
             <div id="detectedPitch" class="mt-3 text-3xl font-semibold text-emerald-300">--</div>
-            <div id="detectedFreq" class="mt-2 text-sm text-slate-400">频率隐藏，仅用于内部判断</div>
+            <div id="detectedFreq" class="mt-2 text-sm text-slate-400">曲线按音名刻度实时滚动</div>
           </div>
           <div class="rounded-2xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur">
             <div class="text-sm font-medium text-slate-300">安卓访问说明</div>
@@ -109,8 +109,8 @@
   <script>
     const MIN_DETECT_HZ = 60;
     const MAX_DETECT_HZ = 1000;
-    const MIN_DRAW_HZ = 80;
-    const MAX_DRAW_HZ = 800;
+    const MIN_MIDI = 40;
+    const MAX_MIDI = 65;
     const HISTORY_SECONDS = 16;
     const SCROLL_PX_PER_SECOND = 82;
 
@@ -378,11 +378,12 @@
       return { midiFloat, midi, cents, octave, noteName, fullNote: noteName + octave };
     }
 
-    function hzToY(frequency) {
-      const minLog = Math.log2(MIN_DRAW_HZ);
-      const maxLog = Math.log2(MAX_DRAW_HZ);
-      const clamped = Math.max(MIN_DRAW_HZ, Math.min(MAX_DRAW_HZ, frequency));
-      const t = (Math.log2(clamped) - minLog) / (maxLog - minLog);
+    function pitchToY(pitch) {
+      if (!pitch) {
+        return canvas.height / 2;
+      }
+      const clampedMidi = Math.max(MIN_MIDI, Math.min(MAX_MIDI, pitch.midiFloat));
+      const t = (clampedMidi - MIN_MIDI) / (MAX_MIDI - MIN_MIDI);
       const topPadding = 28;
       const bottomPadding = 26;
       return canvas.height - bottomPadding - t * (canvas.height - topPadding - bottomPadding);
@@ -400,6 +401,7 @@
       noteHistory.push({
         t: timestamp || performance.now(),
         frequency,
+        pitch,
         active: frequency > 0
       });
 
@@ -427,7 +429,7 @@
         octaveDisplay.textContent = "八度 --";
         centsDisplay.textContent = "偏差 --";
         detectedPitch.textContent = "--";
-        detectedFreq.textContent = "频率隐藏，仅用于内部判断";
+        detectedFreq.textContent = "曲线按音名刻度实时滚动";
         return;
       }
 
@@ -435,7 +437,7 @@
       octaveDisplay.textContent = `八度 ${pitch.octave}`;
       centsDisplay.textContent = `偏差 ${pitch.cents >= 0 ? "+" : ""}${pitch.cents.toFixed(1)} cents`;
       detectedPitch.textContent = pitch.fullNote;
-      detectedFreq.textContent = `内部频率 ${frequency.toFixed(1)} Hz`;
+      detectedFreq.textContent = `当前落点 ${pitch.fullNote}`;
     }
 
     function setStatus(text, stable) {
@@ -460,28 +462,33 @@
     function drawCanvas(now = performance.now()) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       drawGrid();
+      drawCenterGuide();
       drawPitchSeries(now);
+      drawCurrentPitchBadge();
     }
 
     function drawGrid() {
       ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const guideFrequencies = [80, 110, 146.83, 196, 246.94, 329.63, 440, 587.33, 800];
       const dpr = window.devicePixelRatio || 1;
       ctx.lineWidth = 1;
       ctx.font = `${12 * dpr}px Segoe UI, sans-serif`;
 
-      guideFrequencies.forEach((freq) => {
-        const y = hzToY(freq);
-        ctx.strokeStyle = freq === 440 ? "rgba(148, 163, 184, 0.30)" : "rgba(148, 163, 184, 0.12)";
+      for (let midi = MIN_MIDI; midi <= MAX_MIDI; midi += 1) {
+        const pitch = frequencyToPitch(440 * Math.pow(2, (midi - 69) / 12));
+        const y = pitchToY({ midiFloat: midi });
+        const isNatural = !pitch.noteName.includes("#");
+        ctx.strokeStyle = isNatural ? "rgba(148, 163, 184, 0.16)" : "rgba(148, 163, 184, 0.08)";
         ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
+        ctx.moveTo(52 * dpr, y);
+        ctx.lineTo(canvas.width - 52 * dpr, y);
         ctx.stroke();
-        ctx.fillStyle = "rgba(203, 213, 225, 0.75)";
-        ctx.fillText(`${Math.round(freq)}Hz`, 10, y - 6);
-      });
+        ctx.fillStyle = isNatural ? "rgba(226, 232, 240, 0.85)" : "rgba(148, 163, 184, 0.85)";
+        ctx.fillText(pitch.fullNote, 10 * dpr, y - 4 * dpr);
+        const rightTextWidth = ctx.measureText(pitch.fullNote).width;
+        ctx.fillText(pitch.fullNote, canvas.width - rightTextWidth - 10 * dpr, y - 4 * dpr);
+      }
 
       ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
       const spacing = 76 * dpr;
@@ -491,6 +498,22 @@
         ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
+    }
+
+    function drawCenterGuide() {
+      const dpr = window.devicePixelRatio || 1;
+      const x = canvas.width * 0.5;
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.78)";
+      ctx.lineWidth = 2 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+
+      ctx.fillStyle = "#f59e0b";
+      ctx.beginPath();
+      ctx.arc(x, 24 * dpr, 8 * dpr, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     function drawPitchSeries(now) {
@@ -511,15 +534,37 @@
           continue;
         }
 
-        const pitch = frequencyToPitch(point.frequency);
+        const pitch = point.pitch;
+        const prevPitch = prev.pitch;
         const stable = pitch && Math.abs(pitch.cents) <= 12;
         ctx.strokeStyle = stable ? "#34d399" : "#38bdf8";
         ctx.lineWidth = (stable ? 4 : 3) * dpr;
         ctx.beginPath();
-        ctx.moveTo(x1, hzToY(prev.frequency));
-        ctx.lineTo(x2, hzToY(point.frequency));
+        ctx.moveTo(x1, pitchToY(prevPitch));
+        ctx.lineTo(x2, pitchToY(pitch));
         ctx.stroke();
       }
+    }
+
+    function drawCurrentPitchBadge() {
+      const activePoints = noteHistory.filter((point) => point.active && point.pitch);
+      if (!activePoints.length) {
+        return;
+      }
+      const current = activePoints[activePoints.length - 1];
+      const y = pitchToY(current.pitch);
+      const dpr = window.devicePixelRatio || 1;
+
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.35)";
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(52 * dpr, y);
+      ctx.lineTo(canvas.width - 52 * dpr, y);
+      ctx.stroke();
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+      ctx.font = `${42 * dpr}px Segoe UI, sans-serif`;
+      ctx.fillText(current.pitch.fullNote, canvas.width * 0.62, y - 10 * dpr);
     }
 
     toggleButton.addEventListener("click", () => {
