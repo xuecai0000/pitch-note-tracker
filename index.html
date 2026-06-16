@@ -135,6 +135,8 @@
     let animationId = null;
     let running = false;
     let noteHistory = [];
+    let pitchSamples = [];
+    let lockedPitch = null;
     let micPermissionGranted = false;
 
     const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -244,6 +246,8 @@
 
         timeBuffer = new Float32Array(analyser.fftSize);
         noteHistory = [];
+        pitchSamples = [];
+        lockedPitch = null;
         running = true;
         micPermissionGranted = true;
         toggleButton.textContent = "停止检测";
@@ -378,6 +382,52 @@
       return { midiFloat, midi, cents, octave, noteName, fullNote: noteName + octave };
     }
 
+    function getSmoothedFrequency(frequency) {
+      if (frequency > 0) {
+        pitchSamples.push(frequency);
+        if (pitchSamples.length > 7) {
+          pitchSamples.shift();
+        }
+      } else {
+        if (pitchSamples.length > 0) {
+          pitchSamples.shift();
+        }
+      }
+
+      const valid = pitchSamples.filter((value) => value > 0);
+      if (valid.length < 3) {
+        return frequency;
+      }
+
+      const sorted = [...valid].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length / 2)];
+    }
+
+    function stabilizePitch(pitch) {
+      if (!pitch) {
+        lockedPitch = null;
+        return null;
+      }
+
+      if (!lockedPitch) {
+        lockedPitch = { ...pitch };
+        return lockedPitch;
+      }
+
+      const midiDelta = Math.abs(pitch.midiFloat - lockedPitch.midiFloat);
+      const centsDelta = Math.abs((pitch.midiFloat - lockedPitch.midiFloat) * 100);
+
+      if (midiDelta < 0.35 || (pitch.midi === lockedPitch.midi && centsDelta < 45)) {
+        const smoothedMidi = lockedPitch.midiFloat * 0.82 + pitch.midiFloat * 0.18;
+        const smoothedFrequency = 440 * Math.pow(2, (smoothedMidi - 69) / 12);
+        lockedPitch = frequencyToPitch(smoothedFrequency);
+        return lockedPitch;
+      }
+
+      lockedPitch = { ...pitch };
+      return lockedPitch;
+    }
+
     function pitchToY(pitch) {
       if (!pitch) {
         return canvas.height / 2;
@@ -395,14 +445,15 @@
       }
 
       analyser.getFloatTimeDomainData(timeBuffer);
-      const frequency = autoCorrelate(timeBuffer, audioContext.sampleRate);
-      const pitch = frequencyToPitch(frequency);
+      const rawFrequency = autoCorrelate(timeBuffer, audioContext.sampleRate);
+      const smoothedFrequency = getSmoothedFrequency(rawFrequency);
+      const pitch = stabilizePitch(frequencyToPitch(smoothedFrequency));
 
       noteHistory.push({
         t: timestamp || performance.now(),
-        frequency,
+        frequency: smoothedFrequency,
         pitch,
-        active: frequency > 0
+        active: Boolean(pitch)
       });
 
       const cutoff = (timestamp || performance.now()) - HISTORY_SECONDS * 1000;
@@ -410,9 +461,9 @@
         noteHistory.shift();
       }
 
-      updateReadout(frequency);
+      updateReadout(pitch);
       if (pitch) {
-        const inTune = Math.abs(pitch.cents) <= 12;
+        const inTune = Math.abs(pitch.cents) <= 18;
         setStatus(inTune ? "音准稳定" : "检测中", inTune);
       } else {
         setStatus("请发声...", false);
@@ -422,8 +473,7 @@
       animationId = requestAnimationFrame(drawLoop);
     }
 
-    function updateReadout(frequency) {
-      const pitch = frequencyToPitch(frequency);
+    function updateReadout(pitch) {
       if (!pitch) {
         noteDisplay.textContent = "--";
         octaveDisplay.textContent = "八度 --";
@@ -536,7 +586,7 @@
 
         const pitch = point.pitch;
         const prevPitch = prev.pitch;
-        const stable = pitch && Math.abs(pitch.cents) <= 12;
+        const stable = pitch && Math.abs(pitch.cents) <= 18;
         ctx.strokeStyle = stable ? "#34d399" : "#38bdf8";
         ctx.lineWidth = (stable ? 4 : 3) * dpr;
         ctx.beginPath();
