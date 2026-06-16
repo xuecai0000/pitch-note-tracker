@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>实时调名追踪器</title>
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="调名追踪器">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    html, body {
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top, rgba(16, 185, 129, 0.12), transparent 32%),
+        linear-gradient(180deg, #050816 0%, #0f172a 45%, #111827 100%);
+    }
+
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: clamp(280px, 42vh, 420px);
+      min-height: 280px;
+      background: rgba(15, 23, 42, 0.82);
+    }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100">
+  <main class="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+    <header class="flex flex-col gap-4 rounded-2xl border border-white/10 bg-slate-950/45 px-4 py-5 backdrop-blur sm:px-5">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 class="text-3xl font-semibold text-white sm:text-4xl">实时调名追踪器</h1>
+          <p class="mt-2 text-sm text-slate-300">单麦克风实时识别当前主音名，适合吉他弹唱时看当前落在哪个音。</p>
+        </div>
+
+        <div class="grid gap-3 lg:w-[720px]">
+          <label class="block">
+            <span class="mb-2 block text-sm font-medium text-slate-300">输入麦克风</span>
+            <div class="flex flex-col gap-2 sm:flex-row">
+              <select id="micSelect" class="h-12 min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900/90 px-3 text-sm text-slate-100 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20">
+                <option>正在加载输入设备...</option>
+              </select>
+              <button id="permissionButton" type="button" class="h-12 rounded-xl border border-slate-700 bg-slate-800 px-4 text-sm font-semibold text-slate-100 transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500">
+                授权并刷新
+              </button>
+            </div>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <section class="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+      <div class="rounded-2xl border border-white/10 bg-slate-950/45 p-4 backdrop-blur sm:p-5">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <button id="toggleButton" class="inline-flex h-14 items-center justify-center rounded-xl bg-emerald-400 px-8 text-base font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300 focus:outline-none focus:ring-4 focus:ring-emerald-400/30 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none">
+            开始检测
+          </button>
+          <div id="deviceDebug" class="rounded-xl border border-slate-800 bg-slate-900/90 px-4 py-3 text-xs text-slate-400">设备状态：等待检测</div>
+        </div>
+
+        <div id="messageBox" class="mt-4 hidden rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100"></div>
+
+        <div class="mt-5 overflow-hidden rounded-2xl border border-white/10">
+          <canvas id="pitchCanvas" height="360" aria-label="实时音高滚动图"></canvas>
+        </div>
+      </div>
+
+      <div class="grid gap-4">
+        <section class="rounded-2xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur">
+          <div class="text-sm font-medium text-slate-300">当前音名</div>
+          <div id="noteDisplay" class="mt-3 text-7xl font-semibold leading-none text-white sm:text-8xl">--</div>
+          <div class="mt-4 flex items-center gap-3 text-sm text-slate-300">
+            <span id="octaveDisplay" class="rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1.5">八度 --</span>
+            <span id="centsDisplay" class="rounded-full border border-slate-700 bg-slate-900/90 px-3 py-1.5">偏差 --</span>
+          </div>
+          <div id="statusText" class="mt-5 text-2xl font-semibold text-slate-200">请发声...</div>
+        </section>
+
+        <section class="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+          <div class="rounded-2xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur">
+            <div class="text-sm font-medium text-slate-300">检测到的音</div>
+            <div id="detectedPitch" class="mt-3 text-3xl font-semibold text-emerald-300">--</div>
+            <div id="detectedFreq" class="mt-2 text-sm text-slate-400">频率隐藏，仅用于内部判断</div>
+          </div>
+          <div class="rounded-2xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur">
+            <div class="text-sm font-medium text-slate-300">安卓访问说明</div>
+            <div class="mt-3 text-sm leading-6 text-slate-300">
+              部署到 HTTPS 地址后，这个页面可以像手机 App 一样安装到桌面，并支持离线打开。
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const MIN_DETECT_HZ = 60;
+    const MAX_DETECT_HZ = 1000;
+    const MIN_DRAW_HZ = 80;
+    const MAX_DRAW_HZ = 800;
+    const HISTORY_SECONDS = 16;
+    const SCROLL_PX_PER_SECOND = 82;
+
+    const micSelect = document.getElementById("micSelect");
+    const permissionButton = document.getElementById("permissionButton");
+    const toggleButton = document.getElementById("toggleButton");
+    const messageBox = document.getElementById("messageBox");
+    const deviceDebug = document.getElementById("deviceDebug");
+    const canvas = document.getElementById("pitchCanvas");
+    const ctx = canvas.getContext("2d");
+    const noteDisplay = document.getElementById("noteDisplay");
+    const octaveDisplay = document.getElementById("octaveDisplay");
+    const centsDisplay = document.getElementById("centsDisplay");
+    const statusText = document.getElementById("statusText");
+    const detectedPitch = document.getElementById("detectedPitch");
+    const detectedFreq = document.getElementById("detectedFreq");
+
+    let audioContext = null;
+    let micStream = null;
+    let analyser = null;
+    let timeBuffer = null;
+    let animationId = null;
+    let running = false;
+    let noteHistory = [];
+    let micPermissionGranted = false;
+
+    const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+    function showMessage(text) {
+      messageBox.textContent = text;
+      messageBox.classList.remove("hidden");
+    }
+
+    function clearMessage() {
+      messageBox.textContent = "";
+      messageBox.classList.add("hidden");
+    }
+
+    async function refreshAudioInputs() {
+      try {
+        clearMessage();
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          throw new Error("当前浏览器不支持麦克风设备枚举。");
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter((device) => device.kind === "audioinput");
+        fillDeviceSelect(inputs);
+        updateDeviceDebug(inputs);
+
+        if (inputs.length === 0) {
+          showMessage("没有检测到麦克风输入设备。");
+          toggleButton.disabled = true;
+          return;
+        }
+
+        toggleButton.disabled = false;
+        if (inputs.every((device) => !device.label) && !micPermissionGranted) {
+          showMessage("浏览器尚未暴露麦克风名称。点击“授权并刷新”后可继续使用默认麦克风。");
+        }
+      } catch (error) {
+        showMessage(error.message || "加载麦克风设备失败。");
+        deviceDebug.textContent = `设备状态：检测失败 ${error && error.name ? error.name : ""}`;
+        toggleButton.disabled = true;
+      }
+    }
+
+    function updateDeviceDebug(inputs) {
+      const namedCount = inputs.filter((device) => device.label).length;
+      const idCount = inputs.filter((device) => device.deviceId).length;
+      const permissionText = micPermissionGranted ? "已授权" : "未确认授权";
+      deviceDebug.textContent = `设备状态：${permissionText} / 输入设备 ${inputs.length} 个 / 有名称 ${namedCount} 个 / 有ID ${idCount} 个`;
+    }
+
+    function fillDeviceSelect(inputs) {
+      micSelect.innerHTML = "";
+      inputs.forEach((device, index) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || `默认麦克风 ${index + 1}`;
+        micSelect.appendChild(option);
+      });
+    }
+
+    async function requestMicPermissionAndRefresh() {
+      try {
+        clearMessage();
+        permissionButton.disabled = true;
+        permissionButton.textContent = "请在弹窗中允许...";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1
+          }
+        });
+        stream.getTracks().forEach((track) => track.stop());
+        micPermissionGranted = true;
+        await refreshAudioInputs();
+      } catch (error) {
+        micPermissionGranted = false;
+        if (error && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError")) {
+          showMessage("麦克风没有被允许。请在浏览器弹窗中选择允许。");
+        } else {
+          showMessage((error && error.message) || "无法获取麦克风权限。");
+        }
+      } finally {
+        permissionButton.disabled = false;
+        permissionButton.textContent = "授权并刷新";
+      }
+    }
+
+    async function startTracking() {
+      try {
+        clearMessage();
+        if (micSelect.options.length === 0) {
+          showMessage("没有可用的麦克风输入设备。");
+          return;
+        }
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const streamConstraints = buildAudioConstraints(micSelect.value);
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: streamConstraints });
+        const source = audioContext.createMediaStreamSource(micStream);
+
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0;
+        source.connect(analyser);
+
+        timeBuffer = new Float32Array(analyser.fftSize);
+        noteHistory = [];
+        running = true;
+        micPermissionGranted = true;
+        toggleButton.textContent = "停止检测";
+        toggleButton.classList.remove("bg-emerald-400", "hover:bg-emerald-300", "shadow-emerald-500/20", "focus:ring-emerald-400/30");
+        toggleButton.classList.add("bg-rose-400", "hover:bg-rose-300", "shadow-rose-500/20", "focus:ring-rose-400/30");
+        drawLoop();
+      } catch (error) {
+        stopTracking();
+        if (error && (error.name === "NotAllowedError" || error.name === "PermissionDeniedError")) {
+          showMessage("麦克风没有被允许。请在浏览器弹窗中选择允许，然后再开始检测。");
+        } else {
+          showMessage((error && error.message) || "启动检测失败。");
+        }
+      }
+    }
+
+    function buildAudioConstraints(deviceId) {
+      const constraints = {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1
+      };
+      if (deviceId) {
+        constraints.deviceId = { exact: deviceId };
+      }
+      return constraints;
+    }
+
+    function stopTracking() {
+      running = false;
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach((track) => track.stop());
+      }
+      micStream = null;
+      analyser = null;
+      timeBuffer = null;
+
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+      }
+
+      toggleButton.textContent = "开始检测";
+      toggleButton.classList.remove("bg-rose-400", "hover:bg-rose-300", "shadow-rose-500/20", "focus:ring-rose-400/30");
+      toggleButton.classList.add("bg-emerald-400", "hover:bg-emerald-300", "shadow-emerald-500/20", "focus:ring-emerald-400/30");
+      updateReadout(-1);
+      setStatus("请发声...", false);
+      drawCanvas();
+    }
+
+    function getRms(buffer) {
+      let rms = 0;
+      for (let i = 0; i < buffer.length; i += 1) {
+        rms += buffer[i] * buffer[i];
+      }
+      return Math.sqrt(rms / buffer.length);
+    }
+
+    function autoCorrelate(buffer, sampleRate) {
+      const rms = getRms(buffer);
+      if (rms < 0.015) {
+        return -1;
+      }
+
+      const minLag = Math.floor(sampleRate / MAX_DETECT_HZ);
+      const maxLag = Math.min(Math.floor(sampleRate / MIN_DETECT_HZ), buffer.length - 1);
+      let bestLag = -1;
+      let bestCorrelation = 0;
+
+      for (let lag = minLag; lag <= maxLag; lag += 1) {
+        let correlation = 0;
+        for (let i = 0; i < buffer.length - lag; i += 1) {
+          correlation += buffer[i] * buffer[i + lag];
+        }
+        correlation /= buffer.length - lag;
+
+        if (correlation > bestCorrelation) {
+          bestCorrelation = correlation;
+          bestLag = lag;
+        }
+      }
+
+      if (bestLag === -1 || bestCorrelation < 0.002) {
+        return -1;
+      }
+
+      const refinedLag = refineLagWithParabola(buffer, bestLag);
+      const frequency = sampleRate / refinedLag;
+      if (frequency < MIN_DETECT_HZ || frequency > MAX_DETECT_HZ) {
+        return -1;
+      }
+
+      return frequency;
+    }
+
+    function refineLagWithParabola(buffer, lag) {
+      const corrAt = (targetLag) => {
+        if (targetLag <= 0 || targetLag >= buffer.length) {
+          return 0;
+        }
+        let sum = 0;
+        for (let i = 0; i < buffer.length - targetLag; i += 1) {
+          sum += buffer[i] * buffer[i + targetLag];
+        }
+        return sum / (buffer.length - targetLag);
+      };
+
+      const left = corrAt(lag - 1);
+      const center = corrAt(lag);
+      const right = corrAt(lag + 1);
+      const divisor = left - 2 * center + right;
+      if (Math.abs(divisor) < 1e-12) {
+        return lag;
+      }
+      return lag + 0.5 * (left - right) / divisor;
+    }
+
+    function frequencyToPitch(frequency) {
+      if (frequency <= 0) {
+        return null;
+      }
+      const midiFloat = 69 + 12 * Math.log2(frequency / 440);
+      const midi = Math.round(midiFloat);
+      const cents = (midiFloat - midi) * 100;
+      const octave = Math.floor(midi / 12) - 1;
+      const noteName = noteNames[((midi % 12) + 12) % 12];
+      return { midiFloat, midi, cents, octave, noteName, fullNote: noteName + octave };
+    }
+
+    function hzToY(frequency) {
+      const minLog = Math.log2(MIN_DRAW_HZ);
+      const maxLog = Math.log2(MAX_DRAW_HZ);
+      const clamped = Math.max(MIN_DRAW_HZ, Math.min(MAX_DRAW_HZ, frequency));
+      const t = (Math.log2(clamped) - minLog) / (maxLog - minLog);
+      const topPadding = 28;
+      const bottomPadding = 26;
+      return canvas.height - bottomPadding - t * (canvas.height - topPadding - bottomPadding);
+    }
+
+    function drawLoop(timestamp) {
+      if (!running || !analyser) {
+        return;
+      }
+
+      analyser.getFloatTimeDomainData(timeBuffer);
+      const frequency = autoCorrelate(timeBuffer, audioContext.sampleRate);
+      const pitch = frequencyToPitch(frequency);
+
+      noteHistory.push({
+        t: timestamp || performance.now(),
+        frequency,
+        active: frequency > 0
+      });
+
+      const cutoff = (timestamp || performance.now()) - HISTORY_SECONDS * 1000;
+      while (noteHistory.length && noteHistory[0].t < cutoff) {
+        noteHistory.shift();
+      }
+
+      updateReadout(frequency);
+      if (pitch) {
+        const inTune = Math.abs(pitch.cents) <= 12;
+        setStatus(inTune ? "音准稳定" : "检测中", inTune);
+      } else {
+        setStatus("请发声...", false);
+      }
+
+      drawCanvas(timestamp || performance.now());
+      animationId = requestAnimationFrame(drawLoop);
+    }
+
+    function updateReadout(frequency) {
+      const pitch = frequencyToPitch(frequency);
+      if (!pitch) {
+        noteDisplay.textContent = "--";
+        octaveDisplay.textContent = "八度 --";
+        centsDisplay.textContent = "偏差 --";
+        detectedPitch.textContent = "--";
+        detectedFreq.textContent = "频率隐藏，仅用于内部判断";
+        return;
+      }
+
+      noteDisplay.textContent = pitch.noteName;
+      octaveDisplay.textContent = `八度 ${pitch.octave}`;
+      centsDisplay.textContent = `偏差 ${pitch.cents >= 0 ? "+" : ""}${pitch.cents.toFixed(1)} cents`;
+      detectedPitch.textContent = pitch.fullNote;
+      detectedFreq.textContent = `内部频率 ${frequency.toFixed(1)} Hz`;
+    }
+
+    function setStatus(text, stable) {
+      statusText.textContent = text;
+      statusText.classList.toggle("text-emerald-300", stable);
+      statusText.classList.toggle("text-slate-200", !stable);
+    }
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(320, Math.round(rect.width * dpr));
+      const height = Math.max(280, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      drawCanvas();
+    }
+
+    function drawCanvas(now = performance.now()) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawGrid();
+      drawPitchSeries(now);
+    }
+
+    function drawGrid() {
+      ctx.fillStyle = "rgba(15, 23, 42, 0.92)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const guideFrequencies = [80, 110, 146.83, 196, 246.94, 329.63, 440, 587.33, 800];
+      const dpr = window.devicePixelRatio || 1;
+      ctx.lineWidth = 1;
+      ctx.font = `${12 * dpr}px Segoe UI, sans-serif`;
+
+      guideFrequencies.forEach((freq) => {
+        const y = hzToY(freq);
+        ctx.strokeStyle = freq === 440 ? "rgba(148, 163, 184, 0.30)" : "rgba(148, 163, 184, 0.12)";
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(203, 213, 225, 0.75)";
+        ctx.fillText(`${Math.round(freq)}Hz`, 10, y - 6);
+      });
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
+      const spacing = 76 * dpr;
+      for (let x = canvas.width; x > 0; x -= spacing) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+    }
+
+    function drawPitchSeries(now) {
+      const dpr = window.devicePixelRatio || 1;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      for (let i = 1; i < noteHistory.length; i += 1) {
+        const prev = noteHistory[i - 1];
+        const point = noteHistory[i];
+        if (!prev.active || !point.active) {
+          continue;
+        }
+
+        const x1 = canvas.width - ((now - prev.t) / 1000) * SCROLL_PX_PER_SECOND * dpr;
+        const x2 = canvas.width - ((now - point.t) / 1000) * SCROLL_PX_PER_SECOND * dpr;
+        if (x1 < 0 && x2 < 0) {
+          continue;
+        }
+
+        const pitch = frequencyToPitch(point.frequency);
+        const stable = pitch && Math.abs(pitch.cents) <= 12;
+        ctx.strokeStyle = stable ? "#34d399" : "#38bdf8";
+        ctx.lineWidth = (stable ? 4 : 3) * dpr;
+        ctx.beginPath();
+        ctx.moveTo(x1, hzToY(prev.frequency));
+        ctx.lineTo(x2, hzToY(point.frequency));
+        ctx.stroke();
+      }
+    }
+
+    toggleButton.addEventListener("click", () => {
+      if (running) {
+        stopTracking();
+      } else {
+        startTracking();
+      }
+    });
+
+    permissionButton.addEventListener("click", requestMicPermissionAndRefresh);
+    window.addEventListener("resize", resizeCanvas);
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshAudioInputs);
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
+
+    resizeCanvas();
+    refreshAudioInputs();
+  </script>
+</body>
+</html>
